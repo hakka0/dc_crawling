@@ -438,25 +438,28 @@ func forceGC() {
 func main() {
 	now := time.Now().In(kstLoc)
 	
+	// [핵심 수정 1] "완전히 종료된 시간"의 기준점 설정
+	// 예: 현재가 09:50이라면 -> limitTime은 09:00:00
+	// 09시 데이터는 10시 00분이 넘어야 수집 대상이 됨
+	limitTime := time.Date(now.Year(), now.Month(), now.Day(), now.Hour(), 0, 0, 0, kstLoc)
+
 	// 1. R2에서 마지막으로 저장된 시간 확인
 	lastTime, err := getLastSavedTime()
 	
-	// 마지막 기록이 없거나(처음 실행), 너무 오래된 경우(24시간 초과) -> 기본값(1시간 전)만 수행
-	// 안전장치: 너무 오래 쉰 경우 수십 시간치를 한 번에 하면 봇 차단/타임아웃 위험
+	// 안전장치 및 초기화 로직
 	if err != nil || lastTime.IsZero() || time.Since(lastTime) > 24*time.Hour {
 		fmt.Println("마지막 기록이 없거나 너무 오래되어, 기본 모드(1시간 전)로 실행합니다.")
-		lastTime = time.Date(now.Year(), now.Month(), now.Day(), now.Hour()-2, 0, 0, 0, kstLoc) 
-		// lastTime을 2시간 전으로 설정하면 -> 루프에서 +1시간 하니까 결국 1시간 전 데이터를 긁게 됨
+		// 마지막 기록이 없으면, 현재 '완료된 시간'의 1시간 전을 마지막 기록으로 가정
+		lastTime = limitTime.Add(-1 * time.Hour)
 	} else {
 		fmt.Printf("마지막 저장된 데이터: %s\n", lastTime.Format("2006-01-02 15시"))
 	}
 
-	// 2. 누락된 시간대 복구 루프
-	// 예: 마지막이 7시(07h), 현재가 10시(22h) -> 루프: 8시(08h), 9시(09h)
-	// targetTime은 lastTime + 1시간부터 시작해서, 현재 시간(now)보다 이전일 때까지 반복
-	for t := lastTime.Add(time.Hour); t.Before(now); t = t.Add(time.Hour) {
-		// t가 8시라면 -> targetStart: 08:00, targetEnd: 09:00
-		// 정각 기준으로 범위를 잡음
+	// [핵심 수정 2] 루프 조건 변경 (now -> limitTime)
+	// 예: lastTime=07시, now=09:50 (limit=09:00)
+	// 1회차: t=08시. 08시 < 09시 (True) -> 실행 (08:00~08:59 수집)
+	// 2회차: t=09시. 09시 < 09시 (False) -> 중단 (09시 데이터는 아직 수집 안 함)
+	for t := lastTime.Add(time.Hour); t.Before(limitTime); t = t.Add(time.Hour) {
 		targetStart := time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, kstLoc)
 		targetEnd := targetStart.Add(time.Hour)
 		
@@ -466,7 +469,7 @@ func main() {
 
 		fmt.Printf(">>> 복구 크롤링 시작: %02d시 데이터 (%s ~ %s)\n", targetStart.Hour(), targetStart.Format("15:04"), targetEnd.Format("15:04"))
 
-		// 데이터 맵 초기화 (시간대별로 따로 파일 만들어야 하므로)
+		// 데이터 맵 초기화
 		dataMap = make(map[string]*PostData)
 
 		firstPostNo, lastPostNo, firstPostDa, lastPostDa := findTargetHourPosts(targetStart, targetEnd)
@@ -478,7 +481,6 @@ func main() {
 			fmt.Printf("  시작 날짜: %s, 마지막 날짜: %s\n", firstPostDa, lastPostDa)
 			scrapePostsAndComments(firstPostNo, lastPostNo, collectionTimeStr)
 			
-			// 파일 저장 및 업로드
 			if err := saveExcelLocal(filename); err == nil {
 				if err := uploadToR2(filename); err == nil {
 					fmt.Printf("  [SUCCESS] %s 업로드 완료\n", filename)
@@ -489,7 +491,6 @@ func main() {
 			}
 		}
 		
-		// 루프 사이 짧은 대기 (봇 차단 방지)
 		time.Sleep(3 * time.Second)
 		forceGC()
 	}
