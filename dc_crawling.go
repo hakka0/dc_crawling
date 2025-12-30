@@ -11,7 +11,6 @@ import (
 	"os"
 	"runtime"
 	"runtime/debug"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
