@@ -317,9 +317,9 @@ func commentSrc(no int, esno string, collectionTimeStr string) {
 		}
 
 		cNick := comment.Name
-		if cNick == "댓글돌이" {
-			continue
-		}
+		if strings.TrimSpace(cNick) == "댓글돌이" {
+            continue
+        }
 		cUID := comment.UserID
 		if cUID == "" {
 			cUID = comment.IP
