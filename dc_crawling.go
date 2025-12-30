@@ -91,36 +91,41 @@ func updateMemory(collectionTime string, nick string, uid string, isPost bool, i
 	}
 }
 
+// [수정] 목록 탐색 함수: 정확도를 위해 동기(Sync) 방식 + 재시도 로직 적용
 func findTargetHourPosts(targetStart, targetEnd time.Time) (int, int, string, string) {
+	// 1. 목록 탐색용 콜렉터는 동기(Sync)로 설정 (Async 제거)
 	c := colly.NewCollector(
 		colly.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
-		colly.Async(true),
 	)
+	
+	// 타임아웃 넉넉하게 설정
+	c.SetRequestTimeout(30 * time.Second)
 
-	c.Limit(&colly.LimitRule{
-		DomainGlob:  "*",
-		Parallelism: 2,
-		Delay:       1 * time.Second,
+	// [중요] 에러 발생 시 재시도 로직
+	c.OnError(func(r *colly.Response, err error) {
+		fmt.Printf("[Error] 페이지 로드 실패 (%s): %v. 재시도합니다.\n", r.Request.URL, err)
+		r.Request.Retry() // 해당 페이지 다시 요청
 	})
 
 	var startNo, endNo int
 	var startDate, endDate string
-	var listMutex sync.Mutex
 	
+	// 동기 방식이므로 Mutex 불필요
 	page := 1
-	verificationPage := false
 	done := false
 	
+	// 중복 방문 방지 (게시글 번호 기준)
 	visitedIDs := make(map[int]bool)
-	var visitMutex sync.Mutex
 
 	c.OnRequest(func(r *colly.Request) {
 		r.Headers.Set("Referer", "https://gall.dcinside.com/")
 	})
 
 	c.OnHTML("tr.ub-content", func(e *colly.HTMLElement) {
+		if done { return } // 이미 범위를 벗어났으면 파싱 중단
+
 		numText := e.ChildText("td.gall_num")
-		if _, err := strconv.Atoi(numText); err != nil { return }
+		if _, err := strconv.Atoi(numText); err != nil { return } // 공지 등 필터링
 
 		subject := strings.TrimSpace(e.ChildText("td.gall_subject"))
 		if subject == "설문" || subject == "AD" || subject == "공지" { return }
@@ -129,54 +134,60 @@ func findTargetHourPosts(targetStart, targetEnd time.Time) (int, int, string, st
 		postNo, err := strconv.Atoi(noStr)
 		if err != nil { return }
 		
-		visitMutex.Lock()
-		if visitedIDs[postNo] {
-			visitMutex.Unlock()
-			return
-		}
+		if visitedIDs[postNo] { return }
 		visitedIDs[postNo] = true
-		visitMutex.Unlock()
 
 		title := e.ChildAttr("td.gall_date", "title")
 		if title == "" { title = e.ChildText("td.gall_date") }
 
+		// [디버깅] 날짜 파싱 확인
 		postTime, err := time.ParseInLocation("2006-01-02 15:04:05", title, kstLoc)
-		if err != nil { return }
+		if err != nil {
+			// 날짜 파싱 실패 시 로그 출력 (원인 파악용)
+			// fmt.Printf("[Warning] 날짜 파싱 실패 (글번호: %d): %s\n", postNo, title) 
+			return 
+		}
 
-		listMutex.Lock()
-		defer listMutex.Unlock()
-
+		// 1. 타겟 범위 안에 있는 경우 (예: 22:00 ~ 23:00)
 		if (postTime.Equal(targetStart) || postTime.After(targetStart)) && postTime.Before(targetEnd) {
+			// 가장 최신글(번호가 큰 것)을 endNo로
 			if endNo == 0 || postNo > endNo {
 				endNo = postNo
 				endDate = title
 			}
+			// 가장 과거글(번호가 작은 것)을 startNo로 -> 계속 갱신됨
 			if startNo == 0 || postNo < startNo {
 				startNo = postNo
 				startDate = title
 			}
 		}
 
+		// 2. 타겟 범위보다 과거인 경우 (예: 21:59) -> 탐색 종료 신호
 		if postTime.Before(targetStart) {
-			verificationPage = true
+			done = true
 		}
 	})
 
+	// 동기 방식이므로 for 루프가 단순해짐
 	for !done {
 		pageURL := fmt.Sprintf("https://gall.dcinside.com/mgallery/board/lists/?id=projectmx&page=%d", page)
-		c.Visit(pageURL)
 		
-		if page % 5 == 0 {
-			c.Wait()
-			listMutex.Lock()
-			if verificationPage { done = true }
-			listMutex.Unlock()
+		// [속도 조절] 디시 서버 부하 방지 및 차단 회피 (0.2초 대기)
+		time.Sleep(200 * time.Millisecond)
+		
+		err := c.Visit(pageURL)
+		if err != nil {
+			// Visit 자체 에러 (OnError에서 처리 안 된 경우)
+			fmt.Printf("페이지 방문 치명적 오류: %v\n", err)
+			// 여기서 break를 하면 안 되고, 다음 페이지라도 시도하거나 재시도 로직을 믿어야 함
 		}
 
-		if page > 200 { done = true }
+		if page > 500 { // 안전장치: 너무 깊게 들어가지 않도록
+			fmt.Println("페이지 탐색 한계 초과 (500페이지)")
+			break
+		}
 		page++
 	}
-	c.Wait()
 
 	return startNo, endNo, startDate, endDate
 }
