@@ -47,9 +47,9 @@ type ResponseData struct {
 }
 
 var (
-	kstLoc   *time.Location
-	dataMap  = make(map[string]*PostData)
-	mapMutex sync.Mutex
+	kstLoc       *time.Location
+	dataMap      = make(map[string]*PostData)
+	mapMutex     sync.Mutex
 	sharedClient = &http.Client{
 		Timeout: 20 * time.Second,
 		Transport: &http.Transport{
@@ -97,7 +97,7 @@ func findTargetHourPosts(targetStart, targetEnd time.Time) (int, int, string, st
 	c := colly.NewCollector(
 		colly.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
 	)
-	
+
 	// 타임아웃 넉넉하게 설정
 	c.SetRequestTimeout(30 * time.Second)
 
@@ -109,11 +109,11 @@ func findTargetHourPosts(targetStart, targetEnd time.Time) (int, int, string, st
 
 	var startNo, endNo int
 	var startDate, endDate string
-	
+
 	// 동기 방식이므로 Mutex 불필요
 	page := 1
 	done := false
-	
+
 	// 중복 방문 방지 (게시글 번호 기준)
 	visitedIDs := make(map[int]bool)
 
@@ -122,30 +122,42 @@ func findTargetHourPosts(targetStart, targetEnd time.Time) (int, int, string, st
 	})
 
 	c.OnHTML("tr.ub-content", func(e *colly.HTMLElement) {
-		if done { return } // 이미 범위를 벗어났으면 파싱 중단
+		if done {
+			return
+		} // 이미 범위를 벗어났으면 파싱 중단
 
 		numText := e.ChildText("td.gall_num")
-		if _, err := strconv.Atoi(numText); err != nil { return } // 공지 등 필터링
+		if _, err := strconv.Atoi(numText); err != nil {
+			return
+		} // 공지 등 필터링
 
 		subject := strings.TrimSpace(e.ChildText("td.gall_subject"))
-		if subject == "설문" || subject == "AD" || subject == "공지" { return }
+		if subject == "설문" || subject == "AD" || subject == "공지" {
+			return
+		}
 
 		noStr := e.Attr("data-no")
 		postNo, err := strconv.Atoi(noStr)
-		if err != nil { return }
-		
-		if visitedIDs[postNo] { return }
+		if err != nil {
+			return
+		}
+
+		if visitedIDs[postNo] {
+			return
+		}
 		visitedIDs[postNo] = true
 
 		title := e.ChildAttr("td.gall_date", "title")
-		if title == "" { title = e.ChildText("td.gall_date") }
+		if title == "" {
+			title = e.ChildText("td.gall_date")
+		}
 
 		// [디버깅] 날짜 파싱 확인
 		postTime, err := time.ParseInLocation("2006-01-02 15:04:05", title, kstLoc)
 		if err != nil {
 			// 날짜 파싱 실패 시 로그 출력 (원인 파악용)
-			// fmt.Printf("[Warning] 날짜 파싱 실패 (글번호: %d): %s\n", postNo, title) 
-			return 
+			// fmt.Printf("[Warning] 날짜 파싱 실패 (글번호: %d): %s\n", postNo, title)
+			return
 		}
 
 		// 1. 타겟 범위 안에 있는 경우 (예: 22:00 ~ 23:00)
@@ -171,10 +183,10 @@ func findTargetHourPosts(targetStart, targetEnd time.Time) (int, int, string, st
 	// 동기 방식이므로 for 루프가 단순해짐
 	for !done {
 		pageURL := fmt.Sprintf("https://gall.dcinside.com/mgallery/board/lists/?id=projectmx&page=%d", page)
-		
+
 		// [속도 조절] 디시 서버 부하 방지 및 차단 회피 (0.2초 대기)
 		time.Sleep(200 * time.Millisecond)
-		
+
 		err := c.Visit(pageURL)
 		if err != nil {
 			// Visit 자체 에러 (OnError에서 처리 안 된 경우)
@@ -198,14 +210,14 @@ func scrapePostsAndComments(startNo int, endNo int, collectionTimeStr string) {
 		colly.Async(true),
 	)
 	c.SetRequestTimeout(60 * time.Second)
-	
+
 	c.Limit(&colly.LimitRule{
 		DomainGlob:  "*",
 		Parallelism: 4,
 		Delay:       1 * time.Second,
 		RandomDelay: 500 * time.Millisecond,
 	})
-	
+
 	c.OnRequest(func(r *colly.Request) {
 		r.Headers.Set("Referer", "https://gall.dcinside.com/mgallery/board/lists/?id=projectmx")
 	})
@@ -213,7 +225,9 @@ func scrapePostsAndComments(startNo int, endNo int, collectionTimeStr string) {
 	c.OnHTML("div.view_content_wrap", func(e *colly.HTMLElement) {
 		noStr := e.Request.URL.Query().Get("no")
 		no, err := strconv.Atoi(noStr)
-		if err != nil { return }
+		if err != nil {
+			return
+		}
 
 		nick := e.ChildAttr(".gall_writer", "data-nick")
 		uid := e.ChildAttr(".gall_writer", "data-uid")
@@ -222,7 +236,7 @@ func scrapePostsAndComments(startNo int, endNo int, collectionTimeStr string) {
 			uid = e.ChildAttr(".gall_writer", "data-ip")
 			isip = "유동"
 		}
-		
+
 		esno, _ := e.DOM.Find("input#e_s_n_o").Attr("value")
 
 		updateMemory(collectionTimeStr, nick, uid, true, isip)
@@ -230,7 +244,7 @@ func scrapePostsAndComments(startNo int, endNo int, collectionTimeStr string) {
 	})
 
 	fmt.Printf("[DEBUG] 상세 수집 시작: %d번 ~ %d번 글\n", startNo, endNo)
-	
+
 	for i, no := 0, startNo; no <= endNo; i, no = i+1, no+1 {
 		url := fmt.Sprintf("https://gall.dcinside.com/mgallery/board/view/?id=projectmx&no=%d", no)
 		c.Visit(url)
@@ -244,7 +258,7 @@ func commentSrc(no int, esno string, collectionTimeStr string) {
 		req, _ := http.NewRequest("GET", pageURL, nil)
 		req.Header.Set("User-Agent", "Mozilla/5.0...")
 		req.Header.Set("Referer", "https://gall.dcinside.com/")
-		
+
 		resp, err := sharedClient.Do(req)
 		if err == nil {
 			doc, _ := goquery.NewDocumentFromReader(resp.Body)
@@ -253,7 +267,9 @@ func commentSrc(no int, esno string, collectionTimeStr string) {
 		}
 	}
 
-	if esno == "" { return }
+	if esno == "" {
+		return
+	}
 
 	endpoint := "https://gall.dcinside.com/board/comment/"
 	sno := strconv.Itoa(no)
@@ -267,7 +283,9 @@ func commentSrc(no int, esno string, collectionTimeStr string) {
 	data.Set("_GALLTYPE_", "M")
 
 	req, err := http.NewRequest("POST", endpoint, strings.NewReader(data.Encode()))
-	if err != nil { return }
+	if err != nil {
+		return
+	}
 
 	headerurl := fmt.Sprintf("https://gall.dcinside.com/mgallery/board/view/?id=projectmx&no=%d&t=cv", no)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -276,28 +294,38 @@ func commentSrc(no int, esno string, collectionTimeStr string) {
 	req.Header.Set("X-Requested-With", "XMLHttpRequest")
 
 	resp, err := sharedClient.Do(req)
-	if err != nil { return }
+	if err != nil {
+		return
+	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
-	if err != nil { return }
+	if err != nil {
+		return
+	}
 
 	var responseData ResponseData
-	if err := json.Unmarshal(body, &responseData); err != nil { return }
+	if err := json.Unmarshal(body, &responseData); err != nil {
+		return
+	}
 
 	for _, comment := range responseData.Comments {
 		_, err := time.ParseInLocation("2006.01.02 15:04:05", comment.RegDate, kstLoc)
-		
+
 		isip := "(반)고닉"
-		if err != nil { }
-		
+		if err != nil {
+		}
+
 		cNick := comment.Name
+		if cNick == "댓글돌이" {
+			continue
+		}
 		cUID := comment.UserID
 		if cUID == "" {
 			cUID = comment.IP
 			isip = "유동"
 		}
-		
+
 		updateMemory(collectionTimeStr, cNick, cUID, false, isip)
 	}
 }
@@ -308,7 +336,7 @@ func saveExcelLocal(filename string) error {
 	f.SetSheetName(f.GetSheetName(0), sheetName)
 
 	customColumns := []string{"수집시간", "닉네임", "ID(IP)", "유저타입", "작성글수", "작성댓글수", "총활동수"}
-	
+
 	style, _ := f.NewStyle(&excelize.Style{
 		Font: &excelize.Font{Bold: true},
 		Fill: excelize.Fill{Type: "pattern", Color: []string{"#E0E0E0"}, Pattern: 1},
@@ -323,7 +351,7 @@ func saveExcelLocal(filename string) error {
 	rowIndex := 2
 	for _, post := range dataMap {
 		totalActivity := post.PostNum + post.ComNum
-		
+
 		f.SetCellValue(sheetName, fmt.Sprintf("A%d", rowIndex), post.CollectionTime)
 		f.SetCellValue(sheetName, fmt.Sprintf("B%d", rowIndex), post.Nick)
 		f.SetCellValue(sheetName, fmt.Sprintf("C%d", rowIndex), post.UIDIP)
@@ -331,7 +359,7 @@ func saveExcelLocal(filename string) error {
 		f.SetCellValue(sheetName, fmt.Sprintf("E%d", rowIndex), post.PostNum)
 		f.SetCellValue(sheetName, fmt.Sprintf("F%d", rowIndex), post.ComNum)
 		f.SetCellValue(sheetName, fmt.Sprintf("G%d", rowIndex), totalActivity)
-		
+
 		rowIndex++
 	}
 
@@ -360,9 +388,9 @@ func uploadToR2(filename string) error {
 	defer file.Close()
 
 	_, err = client.PutObject(context.TODO(), &s3.PutObjectInput{
-		Bucket: aws.String(bucketName),
-		Key:    aws.String(filename),
-		Body:   file,
+		Bucket:      aws.String(bucketName),
+		Key:         aws.String(filename),
+		Body:        file,
 		ContentType: aws.String("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
 	})
 
@@ -418,14 +446,14 @@ func getLastSavedTime() (time.Time, error) {
 	}
 
 	var maxTime time.Time
-	
+
 	for _, obj := range output.Contents {
 		// 파일명 예시: "2025-12-30_07h.xlsx"
 		key := *obj.Key
 		if !strings.HasSuffix(key, ".xlsx") {
 			continue
 		}
-		
+
 		// 확장자 제거 및 날짜 파싱
 		datePart := strings.TrimSuffix(key, ".xlsx") // "2025-12-30_07h"
 		parsedTime, err := time.ParseInLocation("2006-01-02_15h", datePart, kstLoc)
@@ -448,7 +476,7 @@ func forceGC() {
 
 func main() {
 	now := time.Now().In(kstLoc)
-	
+
 	// [핵심 수정 1] "완전히 종료된 시간"의 기준점 설정
 	// 예: 현재가 09:50이라면 -> limitTime은 09:00:00
 	// 09시 데이터는 10시 00분이 넘어야 수집 대상이 됨
@@ -456,7 +484,7 @@ func main() {
 
 	// 1. R2에서 마지막으로 저장된 시간 확인
 	lastTime, err := getLastSavedTime()
-	
+
 	// 안전장치 및 초기화 로직
 	if err != nil || lastTime.IsZero() || time.Since(lastTime) > 24*time.Hour {
 		fmt.Println("마지막 기록이 없거나 너무 오래되어, 기본 모드(1시간 전)로 실행합니다.")
@@ -473,7 +501,7 @@ func main() {
 	for t := lastTime.Add(time.Hour); t.Before(limitTime); t = t.Add(time.Hour) {
 		targetStart := time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, kstLoc)
 		targetEnd := targetStart.Add(time.Hour)
-		
+
 		collectionTimeStr := targetStart.Format("2006-01-02 15:04")
 		todayDateStr := targetStart.Format("2006-01-02")
 		filename := fmt.Sprintf("%s_%02dh.xlsx", todayDateStr, targetStart.Hour())
@@ -491,7 +519,7 @@ func main() {
 			fmt.Printf("  데이터 수집 중... (글 %d ~ %d)\n", firstPostNo, lastPostNo)
 			fmt.Printf("  시작 날짜: %s, 마지막 날짜: %s\n", firstPostDa, lastPostDa)
 			scrapePostsAndComments(firstPostNo, lastPostNo, collectionTimeStr)
-			
+
 			if err := saveExcelLocal(filename); err == nil {
 				if err := uploadToR2(filename); err == nil {
 					fmt.Printf("  [SUCCESS] %s 업로드 완료\n", filename)
@@ -501,10 +529,10 @@ func main() {
 				}
 			}
 		}
-		
+
 		time.Sleep(3 * time.Second)
 		forceGC()
 	}
-	
+
 	fmt.Println("모든 작업 완료.")
 }
