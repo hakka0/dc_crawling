@@ -93,109 +93,100 @@ func updateMemory(collectionTime string, nick string, uid string, isPost bool, i
 
 // [수정] 목록 탐색 함수: 정확도를 위해 동기(Sync) 방식 + 재시도 로직 적용
 func findTargetHourPosts(targetStart, targetEnd time.Time) (int, int, string, string) {
-	// 1. 목록 탐색용 콜렉터는 동기(Sync)로 설정 (Async 제거)
 	c := colly.NewCollector(
 		colly.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
 	)
-
-	// 타임아웃 넉넉하게 설정
 	c.SetRequestTimeout(30 * time.Second)
 
-	// [중요] 에러 발생 시 재시도 로직
 	c.OnError(func(r *colly.Response, err error) {
 		fmt.Printf("[Error] 페이지 로드 실패 (%s): %v. 재시도합니다.\n", r.Request.URL, err)
-		r.Request.Retry() // 해당 페이지 다시 요청
+		r.Request.Retry()
 	})
 
 	var startNo, endNo int
 	var startDate, endDate string
-
-	// 동기 방식이므로 Mutex 불필요
+	
 	page := 1
 	done := false
-
-	// 중복 방문 방지 (게시글 번호 기준)
 	visitedIDs := make(map[int]bool)
+
+	// 종료 판단용 버퍼 (안전하게 15개로 증가)
+	consecutiveOldPosts := 0
+	const maxConsecutiveOld = 10
 
 	c.OnRequest(func(r *colly.Request) {
 		r.Headers.Set("Referer", "https://gall.dcinside.com/")
 	})
 
 	c.OnHTML("tr.ub-content", func(e *colly.HTMLElement) {
-		if done {
-			return
-		} // 이미 범위를 벗어났으면 파싱 중단
+		if done { return }
 
+		// 1. 기본 필터링 (공지, AD 등 텍스트 기반)
 		numText := e.ChildText("td.gall_num")
-		if _, err := strconv.Atoi(numText); err != nil {
-			return
-		} // 공지 등 필터링
+		if _, err := strconv.Atoi(numText); err != nil { return } 
 
 		subject := strings.TrimSpace(e.ChildText("td.gall_subject"))
-		if subject == "설문" || subject == "AD" || subject == "공지" {
-			return
-		}
+		if subject == "설문" || subject == "AD" || subject == "공지" { return }
 
 		noStr := e.Attr("data-no")
 		postNo, err := strconv.Atoi(noStr)
-		if err != nil {
-			return
-		}
-
-		if visitedIDs[postNo] {
-			return
-		}
+		if err != nil { return }
+		
+		if visitedIDs[postNo] { return }
 		visitedIDs[postNo] = true
 
 		title := e.ChildAttr("td.gall_date", "title")
-		if title == "" {
-			title = e.ChildText("td.gall_date")
-		}
+		if title == "" { title = e.ChildText("td.gall_date") }
 
-		// [디버깅] 날짜 파싱 확인
 		postTime, err := time.ParseInLocation("2006-01-02 15:04:05", title, kstLoc)
-		if err != nil {
-			// 날짜 파싱 실패 시 로그 출력 (원인 파악용)
-			// fmt.Printf("[Warning] 날짜 파싱 실패 (글번호: %d): %s\n", postNo, title)
+		if err != nil { return }
+
+		// [핵심 수정] "함정 카드 발동 무효화"
+		// 만약 글 날짜가 타겟 시간보다 '24시간 이상' 과거라면? -> 이건 상단 고정 공지다.
+		// 종료 카운트(consecutiveOldPosts)에 포함시키지 말고 그냥 무시(return)한다.
+		if targetStart.Sub(postTime) > 24 * time.Hour {
+			// fmt.Printf("[Ignore] 너무 오래된 글(공지 추정): %s\n", title) // 디버깅용
 			return
 		}
 
-		// 1. 타겟 범위 안에 있는 경우 (예: 22:00 ~ 23:00)
+		// 2. 타겟 시간 범위 내 (정상 수집)
 		if (postTime.Equal(targetStart) || postTime.After(targetStart)) && postTime.Before(targetEnd) {
-			// 가장 최신글(번호가 큰 것)을 endNo로
+			consecutiveOldPosts = 0 // 정상 글 찾았으니 초기화
+			
 			if endNo == 0 || postNo > endNo {
 				endNo = postNo
 				endDate = title
 			}
-			// 가장 과거글(번호가 작은 것)을 startNo로 -> 계속 갱신됨
 			if startNo == 0 || postNo < startNo {
 				startNo = postNo
 				startDate = title
 			}
 		}
 
-		// 2. 타겟 범위보다 과거인 경우 (예: 21:59) -> 탐색 종료 신호
+		// 3. 타겟 시간보다 과거 글인 경우 (종료 조건 체크)
 		if postTime.Before(targetStart) {
-			done = true
+			consecutiveOldPosts++ 
+			
+			// 15개 연속으로 '진짜 과거 글(어제/오늘 아침 등)'이 나와야 종료
+			if consecutiveOldPosts >= maxConsecutiveOld {
+				done = true
+			}
+		} else {
+			// 타겟보다 미래(최신) 글이면 리셋
+			if postTime.After(targetEnd) || postTime.Equal(targetEnd) {
+				consecutiveOldPosts = 0
+			}
 		}
 	})
 
-	// 동기 방식이므로 for 루프가 단순해짐
 	for !done {
 		pageURL := fmt.Sprintf("https://gall.dcinside.com/mgallery/board/lists/?id=projectmx&page=%d", page)
+		// 속도와 차단 방지 균형
+		time.Sleep(150 * time.Millisecond)
+		c.Visit(pageURL)
 
-		// [속도 조절] 디시 서버 부하 방지 및 차단 회피 (0.2초 대기)
-		time.Sleep(200 * time.Millisecond)
-
-		err := c.Visit(pageURL)
-		if err != nil {
-			// Visit 자체 에러 (OnError에서 처리 안 된 경우)
-			fmt.Printf("페이지 방문 치명적 오류: %v\n", err)
-			// 여기서 break를 하면 안 되고, 다음 페이지라도 시도하거나 재시도 로직을 믿어야 함
-		}
-
-		if page > 500 { // 안전장치: 너무 깊게 들어가지 않도록
-			fmt.Println("페이지 탐색 한계 초과 (500페이지)")
+		if page > 500 {
+			fmt.Println("페이지 탐색 한계 초과")
 			break
 		}
 		page++
