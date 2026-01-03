@@ -46,3 +46,6 @@ jobs:
         CF_ACCESS_KEY_ID: ${{ secrets.CF_ACCESS_KEY_ID }}
         CF_SECRET_ACCESS_KEY: ${{ secrets.CF_SECRET_ACCESS_KEY }}
         CF_BUCKET_NAME: ${{ secrets.CF_BUCKET_NAME }}
+    - name: Wake up Streamlit App
+      run: |
+        curl -I https://projectmx-users.streamlit.app/
