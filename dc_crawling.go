@@ -244,24 +244,34 @@ func scrapePostsAndComments(startNo int, endNo int, collectionTimeStr string) {
 }
 
 func commentSrc(no int, esno string, collectionTimeStr string) {
+	// 1. esno가 비어있으면(목록에서 못 얻었으면) 상세 페이지에 들어가서 직접 획득 시도
 	if esno == "" {
 		pageURL := fmt.Sprintf("https://gall.dcinside.com/mgallery/board/view/?id=projectmx&no=%d&t=cv", no)
-		req, _ := http.NewRequest("GET", pageURL, nil)
-		req.Header.Set("User-Agent", "Mozilla/5.0...")
+		
+		// [수정] NewRequest 에러 체크 추가
+		req, err := http.NewRequest("GET", pageURL, nil)
+		if err != nil {
+			return 
+		}
+		
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 		req.Header.Set("Referer", "https://gall.dcinside.com/")
-
+		
 		resp, err := sharedClient.Do(req)
 		if err == nil {
-			doc, _ := goquery.NewDocumentFromReader(resp.Body)
-			esno, _ = doc.Find("input#e_s_n_o").Attr("value")
+			// [핵심 수정] goquery 문서 생성 실패 시 nil 체크 (Panic 방지)
+			doc, err := goquery.NewDocumentFromReader(resp.Body)
+			if err == nil && doc != nil {
+				esno, _ = doc.Find("input#e_s_n_o").Attr("value")
+			}
 			resp.Body.Close()
 		}
 	}
 
-	if esno == "" {
-		return
-	}
+	// 여전히 esno가 없으면 댓글 수집 불가능하므로 포기
+	if esno == "" { return }
 
+	// 2. 댓글 목록 데이터 요청 (POST)
 	endpoint := "https://gall.dcinside.com/board/comment/"
 	sno := strconv.Itoa(no)
 	data := url.Values{}
@@ -274,9 +284,7 @@ func commentSrc(no int, esno string, collectionTimeStr string) {
 	data.Set("_GALLTYPE_", "M")
 
 	req, err := http.NewRequest("POST", endpoint, strings.NewReader(data.Encode()))
-	if err != nil {
-		return
-	}
+	if err != nil { return }
 
 	headerurl := fmt.Sprintf("https://gall.dcinside.com/mgallery/board/view/?id=projectmx&no=%d&t=cv", no)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -285,42 +293,36 @@ func commentSrc(no int, esno string, collectionTimeStr string) {
 	req.Header.Set("X-Requested-With", "XMLHttpRequest")
 
 	resp, err := sharedClient.Do(req)
-	if err != nil {
-		return
-	}
+	if err != nil { return }
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return
-	}
+	if err != nil { return }
+
+	// JSON 파싱 시 빈 응답이거나 형식이 잘못된 경우 방어
+	if len(body) == 0 { return }
 
 	var responseData ResponseData
-	if err := json.Unmarshal(body, &responseData); err != nil {
-		return
-	}
+	if err := json.Unmarshal(body, &responseData); err != nil { return }
 
 	for _, comment := range responseData.Comments {
-		_, err := time.ParseInLocation("2006.01.02 15:04:05", comment.RegDate, kstLoc)
-
-		isip := "(반)고닉"
-		if err != nil {
+		// [필터링] 댓글돌이 제외
+		if strings.TrimSpace(comment.Name) == "댓글돌이" {
+			continue
 		}
 
 		cNick := comment.Name
-		if strings.TrimSpace(cNick) == "댓글돌이" {
-            continue
-        }
 		cUID := comment.UserID
+		isip := "(반)고닉"
+		
 		if cUID == "" {
 			cUID = comment.IP
 			isip = "유동"
 		}
-
+		
 		updateMemory(collectionTimeStr, cNick, cUID, false, isip)
 	}
 }
-
 func saveExcelLocal(filename string) error {
 	f := excelize.NewFile()
 	sheetName := "Sheet1"
