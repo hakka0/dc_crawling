@@ -91,7 +91,7 @@ func updateMemory(collectionTime string, nick string, uid string, isPost bool, i
 	}
 }
 
-// [수정] 목록 탐색 함수: 정확도를 위해 동기(Sync) 방식 + 재시도 로직 적용
+// [목록 탐색 함수] 정확도를 위해 동기(Sync) 방식 + 재시도 로직 적용
 func findTargetHourPosts(targetStart, targetEnd time.Time) (int, int, string, string) {
 	c := colly.NewCollector(
 		colly.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
@@ -110,7 +110,7 @@ func findTargetHourPosts(targetStart, targetEnd time.Time) (int, int, string, st
 	done := false
 	visitedIDs := make(map[int]bool)
 
-	// 종료 판단용 버퍼 (안전하게 15개로 증가)
+	// 종료 판단용 버퍼 (안전하게 10개)
 	consecutiveOldPosts := 0
 	const maxConsecutiveOld = 10
 
@@ -141,11 +141,8 @@ func findTargetHourPosts(targetStart, targetEnd time.Time) (int, int, string, st
 		postTime, err := time.ParseInLocation("2006-01-02 15:04:05", title, kstLoc)
 		if err != nil { return }
 
-		// [핵심 수정] "함정 카드 발동 무효화"
-		// 만약 글 날짜가 타겟 시간보다 '24시간 이상' 과거라면? -> 이건 상단 고정 공지다.
-		// 종료 카운트(consecutiveOldPosts)에 포함시키지 말고 그냥 무시(return)한다.
+		// [함정 카드 방지] 글 날짜가 타겟보다 24시간 이상 과거면 고정 공지이므로 무시
 		if targetStart.Sub(postTime) > 24 * time.Hour {
-			// fmt.Printf("[Ignore] 너무 오래된 글(공지 추정): %s\n", title) // 디버깅용
 			return
 		}
 
@@ -167,7 +164,7 @@ func findTargetHourPosts(targetStart, targetEnd time.Time) (int, int, string, st
 		if postTime.Before(targetStart) {
 			consecutiveOldPosts++ 
 			
-			// 15개 연속으로 '진짜 과거 글(어제/오늘 아침 등)'이 나와야 종료
+			// 연속으로 '진짜 과거 글'이 나와야 종료
 			if consecutiveOldPosts >= maxConsecutiveOld {
 				done = true
 			}
@@ -195,7 +192,7 @@ func findTargetHourPosts(targetStart, targetEnd time.Time) (int, int, string, st
 	return startNo, endNo, startDate, endDate
 }
 
-func scrapePostsAndComments(startNo int, endNo int, collectionTimeStr string) {
+func scrapePostsAndComments(startNo int, endNo int, collectionTimeStr string, targetStart, targetEnd time.Time) {
 	c := colly.NewCollector(
 		colly.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
 		colly.Async(true),
@@ -228,22 +225,19 @@ func scrapePostsAndComments(startNo int, endNo int, collectionTimeStr string) {
 			isip = "유동"
 		}
 
-		postDateStr := e.ChildAttr(".gall_date", "title") // 상세페이지 날짜 태그 확인 필요
-        if postDateStr == "" { postDateStr = e.ChildText(".gall_date") }
-        
-        pTime, err := time.ParseInLocation("2006-01-02 15:04:05", postDateStr, kstLoc)
-        
-        // 글 작성 시간이 타겟 시간 내에 있을 때만 '글 작성 수' 카운트
-        if err == nil && (pTime.Equal(targetStart) || pTime.After(targetStart)) && pTime.Before(targetEnd) {
-             updateMemory(collectionTimeStr, nick, uid, true, isip)
-        } else {
-             // 타겟 시간 밖의 글(예: 9시 59분 글)이라면, '글 작성 수'는 올리지 말고 유저 정보만 등록(혹은 무시)
-             // 단, 댓글 카운트는 아래 commentSrc에서 챙겨야 하므로 여기선 아무것도 안 함
-        }
+		postDateStr := e.ChildAttr(".gall_date", "title") 
+		if postDateStr == "" { postDateStr = e.ChildText(".gall_date") }
+		
+		pTime, err := time.ParseInLocation("2006-01-02 15:04:05", postDateStr, kstLoc)
+		
+		// [글 카운트 조건] 글 작성 시간이 타겟 시간 내에 있을 때만 '글 작성 수' 카운트
+		if err == nil && (pTime.Equal(targetStart) || pTime.After(targetStart)) && pTime.Before(targetEnd) {
+			 updateMemory(collectionTimeStr, nick, uid, true, isip)
+		} 
 
-        esno, _ := e.DOM.Find("input#e_s_n_o").Attr("value")
+		esno, _ := e.DOM.Find("input#e_s_n_o").Attr("value")
 
-		updateMemory(collectionTimeStr, nick, uid, true, isip)
+		// [댓글 수집 호출] 타겟 시간을 넘겨줘서 댓글 필터링
 		commentSrc(no, esno, collectionTimeStr, targetStart, targetEnd)
 	})
 
@@ -256,12 +250,11 @@ func scrapePostsAndComments(startNo int, endNo int, collectionTimeStr string) {
 	c.Wait()
 }
 
-func commentSrc(no int, esno string, collectionTimeStr string) {
-	// 1. esno가 비어있으면(목록에서 못 얻었으면) 상세 페이지에 들어가서 직접 획득 시도
+func commentSrc(no int, esno string, collectionTimeStr string, targetStart, targetEnd time.Time) {
+	// 1. esno가 비어있으면 상세 페이지에 들어가서 직접 획득 시도
 	if esno == "" {
 		pageURL := fmt.Sprintf("https://gall.dcinside.com/mgallery/board/view/?id=projectmx&no=%d&t=cv", no)
 		
-		// [수정] NewRequest 에러 체크 추가
 		req, err := http.NewRequest("GET", pageURL, nil)
 		if err != nil {
 			return 
@@ -272,7 +265,7 @@ func commentSrc(no int, esno string, collectionTimeStr string) {
 		
 		resp, err := sharedClient.Do(req)
 		if err == nil {
-			// [핵심 수정] goquery 문서 생성 실패 시 nil 체크 (Panic 방지)
+			// [안전장치] goquery 문서 생성 실패 시 nil 체크
 			doc, err := goquery.NewDocumentFromReader(resp.Body)
 			if err == nil && doc != nil {
 				esno, _ = doc.Find("input#e_s_n_o").Attr("value")
@@ -281,7 +274,6 @@ func commentSrc(no int, esno string, collectionTimeStr string) {
 		}
 	}
 
-	// 여전히 esno가 없으면 댓글 수집 불가능하므로 포기
 	if esno == "" { return }
 
 	// 2. 댓글 목록 데이터 요청 (POST)
@@ -312,7 +304,6 @@ func commentSrc(no int, esno string, collectionTimeStr string) {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil { return }
 
-	// JSON 파싱 시 빈 응답이거나 형식이 잘못된 경우 방어
 	if len(body) == 0 { return }
 
 	var responseData ResponseData
@@ -325,31 +316,30 @@ func commentSrc(no int, esno string, collectionTimeStr string) {
 		}
 
 		cTime, err := time.ParseInLocation("2006.01.02 15:04:05", comment.RegDate, kstLoc)
-        if err != nil {
-             // 포맷이 다를 경우 대비 (하이픈 등)
-             cTime, err = time.ParseInLocation("2006-01-02 15:04:05", comment.RegDate, kstLoc)
-        }
+		if err != nil {
+			 cTime, err = time.ParseInLocation("2006-01-02 15:04:05", comment.RegDate, kstLoc)
+		}
 
-        if err == nil {
-            // [중요] 댓글 시간이 타겟 시간(예: 10:00~11:00) 범위 밖이면 무시
-            // 즉, 9시 글을 긁더라도 9시 50분 댓글은 버리고, 10시 02분 댓글만 취함
-            if cTime.Before(targetStart) || cTime.After(targetEnd) || cTime.Equal(targetEnd) {
-                continue
-            }
-        }
+		if err == nil {
+			// [댓글 카운트 조건] 타겟 시간 범위 내의 댓글만 수집
+			if cTime.Before(targetStart) || cTime.After(targetEnd) || cTime.Equal(targetEnd) {
+				continue
+			}
+		}
 
-        cNick := comment.Name
-        cUID := comment.UserID
-        isip := "(반)고닉"
-        
-        if cUID == "" {
-            cUID = comment.IP
-            isip = "유동"
-        }
+		cNick := comment.Name
+		cUID := comment.UserID
+		isip := "(반)고닉"
+		
+		if cUID == "" {
+			cUID = comment.IP
+			isip = "유동"
+		}
 		
 		updateMemory(collectionTimeStr, cNick, cUID, false, isip)
 	}
 }
+
 func saveExcelLocal(filename string) error {
 	f := excelize.NewFile()
 	sheetName := "Sheet1"
@@ -421,7 +411,6 @@ func uploadToR2(filename string) error {
 	return nil
 }
 
-// R2 클라이언트 생성 헬퍼
 func getR2Client() (*s3.Client, string, error) {
 	accountId := os.Getenv("CF_ACCOUNT_ID")
 	accessKeyId := os.Getenv("CF_ACCESS_KEY_ID")
@@ -450,14 +439,12 @@ func getR2Client() (*s3.Client, string, error) {
 	return s3.NewFromConfig(cfg), bucketName, nil
 }
 
-// [추가] R2에서 가장 최근 파일의 시간 가져오기
 func getLastSavedTime() (time.Time, error) {
 	client, bucketName, err := getR2Client()
 	if err != nil {
 		return time.Time{}, err
 	}
 
-	// 파일 목록 가져오기
 	output, err := client.ListObjectsV2(context.TODO(), &s3.ListObjectsV2Input{
 		Bucket: aws.String(bucketName),
 	})
@@ -468,17 +455,15 @@ func getLastSavedTime() (time.Time, error) {
 	var maxTime time.Time
 
 	for _, obj := range output.Contents {
-		// 파일명 예시: "2025-12-30_07h.xlsx"
 		key := *obj.Key
 		if !strings.HasSuffix(key, ".xlsx") {
 			continue
 		}
 
-		// 확장자 제거 및 날짜 파싱
-		datePart := strings.TrimSuffix(key, ".xlsx") // "2025-12-30_07h"
+		datePart := strings.TrimSuffix(key, ".xlsx") 
 		parsedTime, err := time.ParseInLocation("2006-01-02_15h", datePart, kstLoc)
 		if err != nil {
-			continue // 파싱 실패 시 건너뜀
+			continue 
 		}
 
 		if parsedTime.After(maxTime) {
@@ -497,52 +482,41 @@ func forceGC() {
 func main() {
 	now := time.Now().In(kstLoc)
 
-	// [핵심 수정 1] "완전히 종료된 시간"의 기준점 설정
-	// 예: 현재가 09:50이라면 -> limitTime은 09:00:00
-	// 09시 데이터는 10시 00분이 넘어야 수집 대상이 됨
 	limitTime := time.Date(now.Year(), now.Month(), now.Day(), now.Hour(), 0, 0, 0, kstLoc)
 
-	// 1. R2에서 마지막으로 저장된 시간 확인
 	lastTime, err := getLastSavedTime()
 
-	// 안전장치 및 초기화 로직
 	if err != nil || lastTime.IsZero() || time.Since(lastTime) > 24*time.Hour {
 		fmt.Println("마지막 기록이 없거나 너무 오래되어, 기본 모드(1시간 전)로 실행합니다.")
-		// 마지막 기록이 없으면, 현재 '완료된 시간'의 1시간 전을 마지막 기록으로 가정
 		lastTime = limitTime.Add(-1 * time.Hour)
 	} else {
 		fmt.Printf("마지막 저장된 데이터: %s\n", lastTime.Format("2006-01-02 15시"))
 	}
 
-	// [핵심 수정 2] 루프 조건 변경 (now -> limitTime)
-	// 예: lastTime=07시, now=09:50 (limit=09:00)
-	// 1회차: t=08시. 08시 < 09시 (True) -> 실행 (08:00~08:59 수집)
-	// 2회차: t=09시. 09시 < 09시 (False) -> 중단 (09시 데이터는 아직 수집 안 함)
 	for t := lastTime.Add(time.Hour); t.Before(limitTime); t = t.Add(time.Hour) {
-        // targetStart, targetEnd: 실제 통계를 내고 싶은 시간 (예: 10:00 ~ 11:00)
-        targetStart := time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, kstLoc)
-        targetEnd := targetStart.Add(time.Hour)
-        
-        // [핵심 수정] 스캔 시작 시간(scanStart)을 타겟보다 1시간 전으로 설정
-        // 예: 통계는 10시~11시지만, 글 탐색은 09시~11시 글을 다 뒤진다.
-        scanStart := targetStart.Add(-1 * time.Hour) 
-        
-        collectionTimeStr := targetStart.Format("2006-01-02 15:04")
-        filename := fmt.Sprintf("%s_%02dh.xlsx", targetStart.Format("2006-01-02"), targetStart.Hour())
+		targetStart := time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, kstLoc)
+		targetEnd := targetStart.Add(time.Hour)
+		
+		// [스캔 범위 설정] 1시간 전 글부터 확인 (댓글 누락 방지)
+		scanStart := targetStart.Add(-1 * time.Hour) 
+		
+		collectionTimeStr := targetStart.Format("2006-01-02 15:04")
+		filename := fmt.Sprintf("%s_%02dh.xlsx", targetStart.Format("2006-01-02"), targetStart.Hour())
 
-        fmt.Printf(">>> 복구 크롤링 시작: %02d시 통계 (스캔 범위: %02d시~%02d시 글)\n", targetStart.Hour(), scanStart.Hour(), targetStart.Hour())
+		fmt.Printf(">>> 복구 크롤링 시작: %02d시 통계 (스캔 범위: %02d시~%02d시 글)\n", targetStart.Hour(), scanStart.Hour(), targetStart.Hour())
 
-        dataMap = make(map[string]*PostData)
+		dataMap = make(map[string]*PostData)
 
-        // 1. 글 목록 찾기: 범위를 넓게(scanStart ~ targetEnd) 잡아서 9시 글과 10시 글 번호를 다 가져옴
-        // 함수 이름은 findTargetHourPosts지만 실제로는 Scan Range를 넣음
-        firstPostNo, lastPostNo, _, _ := findTargetHourPosts(scanStart, targetEnd)
+		// [수정 완료] 리턴값을 모두 변수로 받음 (컴파일 에러 해결)
+		firstPostNo, lastPostNo, firstPostDa, lastPostDa := findTargetHourPosts(scanStart, targetEnd)
 
 		if firstPostNo == 0 || lastPostNo == 0 {
-            fmt.Printf("  [SKIP] 게시글 없음\n")
-        } else {
+			fmt.Printf("  [SKIP] 게시글 없음\n")
+		} else {
 			fmt.Printf("  데이터 수집 중... (글 %d ~ %d)\n", firstPostNo, lastPostNo)
 			fmt.Printf("  시작 날짜: %s, 마지막 날짜: %s\n", firstPostDa, lastPostDa)
+			
+			// [상세 수집] targetStart, targetEnd 전달하여 시간 필터링 수행
 			scrapePostsAndComments(firstPostNo, lastPostNo, collectionTimeStr, targetStart, targetEnd)
 
 			if err := saveExcelLocal(filename); err == nil {
