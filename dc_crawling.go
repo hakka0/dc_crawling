@@ -228,10 +228,23 @@ func scrapePostsAndComments(startNo int, endNo int, collectionTimeStr string) {
 			isip = "유동"
 		}
 
-		esno, _ := e.DOM.Find("input#e_s_n_o").Attr("value")
+		postDateStr := e.ChildAttr(".gall_date", "title") // 상세페이지 날짜 태그 확인 필요
+        if postDateStr == "" { postDateStr = e.ChildText(".gall_date") }
+        
+        pTime, err := time.ParseInLocation("2006-01-02 15:04:05", postDateStr, kstLoc)
+        
+        // 글 작성 시간이 타겟 시간 내에 있을 때만 '글 작성 수' 카운트
+        if err == nil && (pTime.Equal(targetStart) || pTime.After(targetStart)) && pTime.Before(targetEnd) {
+             updateMemory(collectionTimeStr, nick, uid, true, isip)
+        } else {
+             // 타겟 시간 밖의 글(예: 9시 59분 글)이라면, '글 작성 수'는 올리지 말고 유저 정보만 등록(혹은 무시)
+             // 단, 댓글 카운트는 아래 commentSrc에서 챙겨야 하므로 여기선 아무것도 안 함
+        }
+
+        esno, _ := e.DOM.Find("input#e_s_n_o").Attr("value")
 
 		updateMemory(collectionTimeStr, nick, uid, true, isip)
-		commentSrc(no, esno, collectionTimeStr)
+		commentSrc(no, esno, collectionTimeStr, targetStart, targetEnd)
 	})
 
 	fmt.Printf("[DEBUG] 상세 수집 시작: %d번 ~ %d번 글\n", startNo, endNo)
@@ -311,14 +324,28 @@ func commentSrc(no int, esno string, collectionTimeStr string) {
 			continue
 		}
 
-		cNick := comment.Name
-		cUID := comment.UserID
-		isip := "(반)고닉"
-		
-		if cUID == "" {
-			cUID = comment.IP
-			isip = "유동"
-		}
+		cTime, err := time.ParseInLocation("2006.01.02 15:04:05", comment.RegDate, kstLoc)
+        if err != nil {
+             // 포맷이 다를 경우 대비 (하이픈 등)
+             cTime, err = time.ParseInLocation("2006-01-02 15:04:05", comment.RegDate, kstLoc)
+        }
+
+        if err == nil {
+            // [중요] 댓글 시간이 타겟 시간(예: 10:00~11:00) 범위 밖이면 무시
+            // 즉, 9시 글을 긁더라도 9시 50분 댓글은 버리고, 10시 02분 댓글만 취함
+            if cTime.Before(targetStart) || cTime.After(targetEnd) || cTime.Equal(targetEnd) {
+                continue
+            }
+        }
+
+        cNick := comment.Name
+        cUID := comment.UserID
+        isip := "(반)고닉"
+        
+        if cUID == "" {
+            cUID = comment.IP
+            isip = "유동"
+        }
 		
 		updateMemory(collectionTimeStr, cNick, cUID, false, isip)
 	}
@@ -492,26 +519,31 @@ func main() {
 	// 1회차: t=08시. 08시 < 09시 (True) -> 실행 (08:00~08:59 수집)
 	// 2회차: t=09시. 09시 < 09시 (False) -> 중단 (09시 데이터는 아직 수집 안 함)
 	for t := lastTime.Add(time.Hour); t.Before(limitTime); t = t.Add(time.Hour) {
-		targetStart := time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, kstLoc)
-		targetEnd := targetStart.Add(time.Hour)
+        // targetStart, targetEnd: 실제 통계를 내고 싶은 시간 (예: 10:00 ~ 11:00)
+        targetStart := time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, kstLoc)
+        targetEnd := targetStart.Add(time.Hour)
+        
+        // [핵심 수정] 스캔 시작 시간(scanStart)을 타겟보다 1시간 전으로 설정
+        // 예: 통계는 10시~11시지만, 글 탐색은 09시~11시 글을 다 뒤진다.
+        scanStart := targetStart.Add(-1 * time.Hour) 
+        
+        collectionTimeStr := targetStart.Format("2006-01-02 15:04")
+        filename := fmt.Sprintf("%s_%02dh.xlsx", targetStart.Format("2006-01-02"), targetStart.Hour())
 
-		collectionTimeStr := targetStart.Format("2006-01-02 15:04")
-		todayDateStr := targetStart.Format("2006-01-02")
-		filename := fmt.Sprintf("%s_%02dh.xlsx", todayDateStr, targetStart.Hour())
+        fmt.Printf(">>> 복구 크롤링 시작: %02d시 통계 (스캔 범위: %02d시~%02d시 글)\n", targetStart.Hour(), scanStart.Hour(), targetStart.Hour())
 
-		fmt.Printf(">>> 복구 크롤링 시작: %02d시 데이터 (%s ~ %s)\n", targetStart.Hour(), targetStart.Format("15:04"), targetEnd.Format("15:04"))
+        dataMap = make(map[string]*PostData)
 
-		// 데이터 맵 초기화
-		dataMap = make(map[string]*PostData)
-
-		firstPostNo, lastPostNo, firstPostDa, lastPostDa := findTargetHourPosts(targetStart, targetEnd)
+        // 1. 글 목록 찾기: 범위를 넓게(scanStart ~ targetEnd) 잡아서 9시 글과 10시 글 번호를 다 가져옴
+        // 함수 이름은 findTargetHourPosts지만 실제로는 Scan Range를 넣음
+        firstPostNo, lastPostNo, _, _ := findTargetHourPosts(scanStart, targetEnd)
 
 		if firstPostNo == 0 || lastPostNo == 0 {
-			fmt.Printf("  [SKIP] %02d시: 게시글 없음\n", targetStart.Hour())
-		} else {
+            fmt.Printf("  [SKIP] 게시글 없음\n")
+        } else {
 			fmt.Printf("  데이터 수집 중... (글 %d ~ %d)\n", firstPostNo, lastPostNo)
 			fmt.Printf("  시작 날짜: %s, 마지막 날짜: %s\n", firstPostDa, lastPostDa)
-			scrapePostsAndComments(firstPostNo, lastPostNo, collectionTimeStr)
+			scrapePostsAndComments(firstPostNo, lastPostNo, collectionTimeStr, targetStart, targetEnd)
 
 			if err := saveExcelLocal(filename); err == nil {
 				if err := uploadToR2(filename); err == nil {
