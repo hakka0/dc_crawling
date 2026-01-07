@@ -1,4 +1,4 @@
-name: Keep Streamlit Alive via Playwright
+name: Streamlit Wakeup
 
 on:
   schedule:
