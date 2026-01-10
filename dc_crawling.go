@@ -206,6 +206,8 @@ func scrapePostsAndComments(startNo int, endNo int, collectionTimeStr string, ta
 		RandomDelay: 500 * time.Millisecond,
 	})
 
+    var visitedPosts sync.Map 
+
 	c.OnRequest(func(r *colly.Request) {
 		r.Headers.Set("Referer", "https://gall.dcinside.com/mgallery/board/lists/?id=projectmx")
 	})
@@ -216,6 +218,10 @@ func scrapePostsAndComments(startNo int, endNo int, collectionTimeStr string, ta
 		if err != nil {
 			return
 		}
+
+        if _, loaded := visitedPosts.LoadOrStore(no, true); loaded {
+            return
+        }
 
 		nick := e.ChildAttr(".gall_writer", "data-nick")
 		uid := e.ChildAttr(".gall_writer", "data-uid")
@@ -230,14 +236,12 @@ func scrapePostsAndComments(startNo int, endNo int, collectionTimeStr string, ta
 		
 		pTime, err := time.ParseInLocation("2006-01-02 15:04:05", postDateStr, kstLoc)
 		
-		// [글 카운트 조건] 글 작성 시간이 타겟 시간 내에 있을 때만 '글 작성 수' 카운트
 		if err == nil && (pTime.Equal(targetStart) || pTime.After(targetStart)) && pTime.Before(targetEnd) {
 			 updateMemory(collectionTimeStr, nick, uid, true, isip)
 		} 
 
 		esno, _ := e.DOM.Find("input#e_s_n_o").Attr("value")
 
-		// [댓글 수집 호출] 타겟 시간을 넘겨줘서 댓글 필터링
 		commentSrc(no, esno, collectionTimeStr, targetStart, targetEnd)
 	})
 
@@ -265,7 +269,6 @@ func commentSrc(no int, esno string, collectionTimeStr string, targetStart, targ
 		
 		resp, err := sharedClient.Do(req)
 		if err == nil {
-			// [안전장치] goquery 문서 생성 실패 시 nil 체크
 			doc, err := goquery.NewDocumentFromReader(resp.Body)
 			if err == nil && doc != nil {
 				esno, _ = doc.Find("input#e_s_n_o").Attr("value")
