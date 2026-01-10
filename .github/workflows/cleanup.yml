@@ -1,0 +1,23 @@
+name: Delete Old Workflow Runs
+
+on:
+  schedule:
+    # 매일 자정(00:00 UTC)에 실행
+    - cron: '0 0 * * *'
+  # 필요할 때 수동으로 버튼을 눌러 실행할 수 있게 함
+  workflow_dispatch:
+
+jobs:
+  del_runs:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Delete workflow runs
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          retain_days: 3    # 3일 지난 기록은 삭제 (원하는 날짜로 변경 가능)
+          keep_minimum_runs: 5 # 최소한 최근 5개는 남겨둠 (실수 방지용)
