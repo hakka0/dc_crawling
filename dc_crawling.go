@@ -338,33 +338,33 @@ func commentSrc(no int, esno string, collectionTimeStr string, targetStart, targ
 		if strings.TrimSpace(comment.Name) == "댓글돌이" {
 			continue
 		}
-		fullDateStr := fmt.Sprintf("%d.%s", targetStart.Year(), comment.RegDate)
-		cTime, err := time.ParseInLocation("2006.01.02 15:04:05", fullDateStr, kstLoc)
+
+		cTime, err := time.ParseInLocation("2006.01.02 15:04:05", comment.RegDate, kstLoc)
 		if err != nil {
 			 cTime, err = time.ParseInLocation("2006-01-02 15:04:05", comment.RegDate, kstLoc)
 		}
 
 		if err == nil {
-			// [댓글 카운트 조건] 타겟 시간 범위 내의 댓글만 수집
 			if cTime.Before(targetStart) || cTime.After(targetEnd) || cTime.Equal(targetEnd) {
 				continue
-			} else {
-            	continue 
-        }
+			}
 		}
+
 		isip := ""
-		uniqueKey := comment.UserID
+        uniqueKey := comment.UserID
+
 		if comment.UserID == "" {
-		    isip = "유동"
-			uniqueKey = comment.IP
+			isip = "유동"
+            uniqueKey = comment.IP // 유동일 경우 IP를 식별자로 사용
 		} else {
-		    if strings.Contains(comment.GallogIcon, "fix_nik.gif") {
-		        isip = "고닉"
-		    } else {
-		        isip = "반고닉"
-		    }
+			if strings.Contains(comment.GallogIcon, "fix_nik.gif") {
+				isip = "고닉"
+			} else {
+				isip = "반고닉"
+			}
 		}
 		
+        // 수정된 uniqueKey 사용
 		updateMemory(collectionTimeStr, comment.Name, uniqueKey, false, isip)
 	}
 }
