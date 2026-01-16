@@ -331,8 +331,8 @@ func commentSrc(no int, esno string, collectionTimeStr string, targetStart, targ
 		if strings.TrimSpace(comment.Name) == "댓글돌이" {
 			continue
 		}
-
-		cTime, err := time.ParseInLocation("2006.01.02 15:04:05", comment.RegDate, kstLoc)
+		fullDateStr := fmt.Sprintf("%d.%s", targetStart.Year(), comment.RegDate)
+		cTime, err := time.ParseInLocation("2006.01.02 15:04:05", fullDateStr, kstLoc)
 		if err != nil {
 			 cTime, err = time.ParseInLocation("2006-01-02 15:04:05", comment.RegDate, kstLoc)
 		}
@@ -341,7 +341,9 @@ func commentSrc(no int, esno string, collectionTimeStr string, targetStart, targ
 			// [댓글 카운트 조건] 타겟 시간 범위 내의 댓글만 수집
 			if cTime.Before(targetStart) || cTime.After(targetEnd) || cTime.Equal(targetEnd) {
 				continue
-			}
+			} else {
+            	continue 
+        }
 		}
 		isip := ""
 		uniqueKey := comment.UserID
