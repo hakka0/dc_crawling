@@ -517,7 +517,6 @@ func main() {
 		targetStart := time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, kstLoc)
 		targetEnd := targetStart.Add(time.Hour)
 		
-		// [스캔 범위 설정] 1시간 전 글부터 확인 (댓글 누락 방지)
 		scanStart := targetStart.Add(-1 * time.Hour) 
 		
 		collectionTimeStr := targetStart.Format("2006-01-02 15:04")
@@ -527,7 +526,6 @@ func main() {
 
 		dataMap = make(map[string]*PostData)
 
-		// [수정 완료] 리턴값을 모두 변수로 받음 (컴파일 에러 해결)
 		firstPostNo, lastPostNo, firstPostDa, lastPostDa := findTargetHourPosts(scanStart, targetEnd)
 
 		if firstPostNo == 0 || lastPostNo == 0 {
@@ -536,7 +534,6 @@ func main() {
 			fmt.Printf("  데이터 수집 중... (글 %d ~ %d)\n", firstPostNo, lastPostNo)
 			fmt.Printf("  시작 날짜: %s, 마지막 날짜: %s\n", firstPostDa, lastPostDa)
 			
-			// [상세 수집] targetStart, targetEnd 전달하여 시간 필터링 수행
 			scrapePostsAndComments(firstPostNo, lastPostNo, collectionTimeStr, targetStart, targetEnd)
 
 			if err := saveExcelLocal(filename); err == nil {
