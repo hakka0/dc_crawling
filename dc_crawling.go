@@ -36,10 +36,12 @@ type PostData struct {
 }
 
 type Comment struct {
+	No      string `json:"no"`
 	UserID  string `json:"user_id"`
 	Name    string `json:"name"`
 	IP      string `json:"ip"`
 	RegDate string `json:"reg_date"`
+	GallogIcon string `json:"gallog_icon"`
 }
 
 type ResponseData struct {
@@ -225,10 +227,22 @@ func scrapePostsAndComments(startNo int, endNo int, collectionTimeStr string, ta
 
 		nick := e.ChildAttr(".gall_writer", "data-nick")
 		uid := e.ChildAttr(".gall_writer", "data-uid")
-		isip := "(반)고닉"
+		
+        isip := ""
+
 		if uid == "" {
 			uid = e.ChildAttr(".gall_writer", "data-ip")
 			isip = "유동"
+		} else {
+            iconSrc := e.ChildAttr(".gall_writer .writer_nikcon img", "src")
+            
+            if iconSrc == "https://nstatic.dcinside.com/dc/w/images/nik.gif" {
+                isip = "반고닉"
+            } else if iconSrc == "https://nstatic.dcinside.com/dc/w/images/fix_nik.gif" {
+                isip = "고닉"
+            } else {
+                isip = "반고닉" 
+            }
 		}
 
 		postDateStr := e.ChildAttr(".gall_date", "title") 
@@ -332,14 +346,18 @@ func commentSrc(no int, esno string, collectionTimeStr string, targetStart, targ
 
 		cNick := comment.Name
 		cUID := comment.UserID
-		isip := "(반)고닉"
-		
-		if cUID == "" {
-			cUID = comment.IP
-			isip = "유동"
+		isip := ""
+		if comment.UserID == "" {
+		    isip = "유동"
+		} else {
+		    if strings.Contains(comment.GallogIcon, "fix_nik.gif") {
+		        isip = "고닉"
+		    } else {
+		        isip = "반고닉"
+		    }
 		}
 		
-		updateMemory(collectionTimeStr, cNick, cUID, false, isip)
+		updateMemory(collectionTimeStr, comment.Name, comment.UserID, false, isip)
 	}
 }
 
