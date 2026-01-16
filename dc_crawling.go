@@ -343,9 +343,6 @@ func commentSrc(no int, esno string, collectionTimeStr string, targetStart, targ
 				continue
 			}
 		}
-
-		cNick := comment.Name
-		cUID := comment.UserID
 		isip := ""
 		if comment.UserID == "" {
 		    isip = "유동"
