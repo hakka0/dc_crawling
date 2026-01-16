@@ -207,7 +207,14 @@ func scrapePostsAndComments(startNo int, endNo int, collectionTimeStr string, ta
 		Delay:       1 * time.Second,
 		RandomDelay: 500 * time.Millisecond,
 	})
-
+	
+	c.OnError(func(r *colly.Response, err error) {
+		if r.StatusCode >= 500 || r.StatusCode == 0 {
+			fmt.Printf("[RETRY] 상세 글 접속 실패 (%s): %v. 재시도...\n", r.Request.URL, err)
+			r.Request.Retry()
+		}
+	})
+	
     var visitedPosts sync.Map 
 
 	c.OnRequest(func(r *colly.Request) {
