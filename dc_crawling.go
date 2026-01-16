@@ -344,8 +344,10 @@ func commentSrc(no int, esno string, collectionTimeStr string, targetStart, targ
 			}
 		}
 		isip := ""
+		uniqueKey := comment.UserID
 		if comment.UserID == "" {
 		    isip = "유동"
+			uniqueKey = comment.IP
 		} else {
 		    if strings.Contains(comment.GallogIcon, "fix_nik.gif") {
 		        isip = "고닉"
@@ -354,7 +356,7 @@ func commentSrc(no int, esno string, collectionTimeStr string, targetStart, targ
 		    }
 		}
 		
-		updateMemory(collectionTimeStr, comment.Name, comment.UserID, false, isip)
+		updateMemory(collectionTimeStr, comment.Name, uniqueKey, false, isip)
 	}
 }
 
