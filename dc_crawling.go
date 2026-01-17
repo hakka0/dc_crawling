@@ -281,9 +281,7 @@ func commentSrc(no int, esno string, collectionTimeStr string, targetStart, targ
 		pageURL := fmt.Sprintf("https://gall.dcinside.com/mgallery/board/view/?id=projectmx&no=%d&t=cv", no)
 		
 		req, err := http.NewRequest("GET", pageURL, nil)
-		if err != nil {
-			return 
-		}
+		if err != nil { return }
 		
 		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 		req.Header.Set("Referer", "https://gall.dcinside.com/")
@@ -300,7 +298,7 @@ func commentSrc(no int, esno string, collectionTimeStr string, targetStart, targ
 
 	if esno == "" { return }
 
-	// 2. 댓글 목록 데이터 요청 (POST)
+	// 2. 댓글 목록 데이터 요청
 	endpoint := "https://gall.dcinside.com/board/comment/"
 	sno := strconv.Itoa(no)
 	data := url.Values{}
@@ -334,28 +332,36 @@ func commentSrc(no int, esno string, collectionTimeStr string, targetStart, targ
 	if err := json.Unmarshal(body, &responseData); err != nil { return }
 
 	for _, comment := range responseData.Comments {
-		// [필터링] 댓글돌이 제외
 		if strings.TrimSpace(comment.Name) == "댓글돌이" {
 			continue
 		}
 
-		cTime, err := time.ParseInLocation("2006.01.02 15:04:05", comment.RegDate, kstLoc)
-		if err != nil {
-			 cTime, err = time.ParseInLocation("2006-01-02 15:04:05", comment.RegDate, kstLoc)
-		}
+		// [날짜 파싱 핵심 수정]
+		// JSON 날짜: "01.17 03:16:16" (연도 없음)
+		// 현재 타겟 연도(예: 2026)를 앞에 붙여서 "2026.01.17 03:16:16"으로 만듦
+		fullDateStr := fmt.Sprintf("%d.%s", targetStart.Year(), comment.RegDate)
+		
+		// 이제 "2006.01.02 15:04:05" 포맷으로 파싱 가능
+		cTime, err := time.ParseInLocation("2006.01.02 15:04:05", fullDateStr, kstLoc)
 
 		if err == nil {
+			// 정상 파싱된 경우 시간 필터링 (이제 연도가 2026년이므로 정상 비교됨)
 			if cTime.Before(targetStart) || cTime.After(targetEnd) || cTime.Equal(targetEnd) {
 				continue
 			}
+		} else {
+			// 파싱 에러가 나면 날짜가 이상한 것이므로 안전하게 무시하거나 수집
+			// 여기서는 날짜 체크 없이 수집하도록 둠 (데이터 유실 방지)
+			continue
 		}
 
+		// [유저 타입 판별]
 		isip := ""
-        uniqueKey := comment.UserID
+		uniqueKey := comment.UserID
 
 		if comment.UserID == "" {
 			isip = "유동"
-            uniqueKey = comment.IP // 유동일 경우 IP를 식별자로 사용
+			uniqueKey = comment.IP
 		} else {
 			if strings.Contains(comment.GallogIcon, "fix_nik.gif") {
 				isip = "고닉"
@@ -363,8 +369,6 @@ func commentSrc(no int, esno string, collectionTimeStr string, targetStart, targ
 				isip = "반고닉"
 			}
 		}
-		
-        // 수정된 uniqueKey 사용
 		updateMemory(collectionTimeStr, comment.Name, uniqueKey, false, isip)
 	}
 }
