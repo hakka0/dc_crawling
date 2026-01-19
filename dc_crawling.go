@@ -11,6 +11,7 @@ import (
 	"os"
 	"runtime"
 	"runtime/debug"
+	"sync/atomic"
 	"strconv"
 	"strings"
 	"sync"
@@ -208,19 +209,29 @@ func scrapePostsAndComments(startNo int, endNo int, collectionTimeStr string, ta
 		RandomDelay: 500 * time.Millisecond,
 	})
 	
+    var visitedPosts sync.Map
+	var failCount int32
+	
 	c.OnError(func(r *colly.Response, err error) {
+		retries, _ := strconv.Atoi(r.Ctx.Get("retry_count"))
 		if r.StatusCode >= 500 || r.StatusCode == 0 {
-			fmt.Printf("[RETRY] 상세 글 접속 실패 (%s): %v. 재시도...\n", r.Request.URL, err)
-			r.Request.Retry()
+			if retries < 3 {
+				r.Ctx.Put("retry_count", strconv.Itoa(retries+1))
+				// fmt.Printf("[RETRY %d/3] 접속 실패 ... \n", retries+1) // 로그 너무 많으면 주석 처리
+				r.Request.Retry()
+			} else {
+				// 3번 재시도 후에도 실패하면 카운트 증가
+				atomic.AddInt32(&failCount, 1)
+				fmt.Printf("[FAIL] %s - 3회 재시도 실패. (누적 실패: %d)\n", r.Request.URL, atomic.LoadInt32(&failCount))
+			}
 		}
 	})
 	
-    var visitedPosts sync.Map 
 
 	c.OnRequest(func(r *colly.Request) {
 		r.Headers.Set("Referer", "https://gall.dcinside.com/mgallery/board/lists/?id=projectmx")
 	})
-
+	
 	c.OnHTML("div.view_content_wrap", func(e *colly.HTMLElement) {
 		noStr := e.Request.URL.Query().Get("no")
 		no, err := strconv.Atoi(noStr)
@@ -273,6 +284,13 @@ func scrapePostsAndComments(startNo int, endNo int, collectionTimeStr string, ta
 		c.Visit(url)
 	}
 	c.Wait()
+	
+	finalFailCount := atomic.LoadInt32(&failCount)
+	if finalFailCount > 10 { // 기준: 10개 이상 글 수집 실패 시
+		return fmt.Errorf("수집 실패 과다 (실패: %d개) - IP 차단 의심으로 인해 저장을 건너뜁니다", finalFailCount)
+	}
+
+	return nil // 정상 완료
 }
 
 func commentSrc(no int, esno string, collectionTimeStr string, targetStart, targetEnd time.Time) {
