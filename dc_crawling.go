@@ -532,9 +532,7 @@ func forceGC() {
 
 func main() {
 	now := time.Now().In(kstLoc)
-
 	limitTime := time.Date(now.Year(), now.Month(), now.Day(), now.Hour(), 0, 0, 0, kstLoc)
-
 	lastTime, err := getLastSavedTime()
 
 	if err != nil || lastTime.IsZero() || time.Since(lastTime) > 24*time.Hour {
@@ -547,13 +545,12 @@ func main() {
 	for t := lastTime.Add(time.Hour); t.Before(limitTime); t = t.Add(time.Hour) {
 		targetStart := time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, kstLoc)
 		targetEnd := targetStart.Add(time.Hour)
-		
 		scanStart := targetStart.Add(-1 * time.Hour) 
 		
 		collectionTimeStr := targetStart.Format("2006-01-02 15:04")
 		filename := fmt.Sprintf("%s_%02dh.xlsx", targetStart.Format("2006-01-02"), targetStart.Hour())
 
-		fmt.Printf(">>> 복구 크롤링 시작: %02d시 통계 (스캔 범위: %02d시~%02d시 글)\n", targetStart.Hour(), scanStart.Hour(), targetStart.Hour())
+		fmt.Printf(">>> 복구 크롤링 시작: %02d시 통계\n", targetStart.Hour())
 
 		dataMap = make(map[string]*PostData)
 
@@ -565,8 +562,17 @@ func main() {
 			fmt.Printf("  데이터 수집 중... (글 %d ~ %d)\n", firstPostNo, lastPostNo)
 			fmt.Printf("  시작 날짜: %s, 마지막 날짜: %s\n", firstPostDa, lastPostDa)
 			
-			scrapePostsAndComments(firstPostNo, lastPostNo, collectionTimeStr, targetStart, targetEnd)
+			// [수정됨] 에러 체크 로직 추가
+			err := scrapePostsAndComments(firstPostNo, lastPostNo, collectionTimeStr, targetStart, targetEnd)
+			
+			if err != nil {
+				// [중요] 실패가 많으면 저장하지 않고 프로그램 종료 -> 다음 실행 때 재시도 유도
+				fmt.Printf("  [ABORT] %v\n", err)
+				fmt.Println("  데이터 무결성을 위해 이번 실행을 무효화하고 종료합니다. 다음 스케줄에 재시도합니다.")
+				return // 여기서 main 함수 종료
+			}
 
+            // 에러가 없을 때만 저장 및 업로드 수행
 			if err := saveExcelLocal(filename); err == nil {
 				if err := uploadToR2(filename); err == nil {
 					fmt.Printf("  [SUCCESS] %s 업로드 완료\n", filename)
